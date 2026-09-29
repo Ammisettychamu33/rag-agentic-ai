@@ -286,15 +286,28 @@ Submits a query to the LangGraph pipeline.
 
 ---
 
-## 12. Streamlit UI Usage
+## 12. Streamlit UI Usage & Cloud Deployment
 
-Launch the frontend dashboard:
+### Local Execution
+Launch the frontend dashboard locally:
 ```bash
 streamlit run streamlit_app.py
 ```
 
-Features:
-- **Real-Time Health Status**: Monitors connectivity to the FastAPI backend.
+### Streamlit Community Cloud Deployment
+1. Log in to [share.streamlit.io](https://share.streamlit.io) with your GitHub account.
+2. Click **New app** and select the repository: `Ammisettychamu33/rag-agentic-ai`.
+3. Set **Main file path**: `streamlit_app.py`.
+4. Expand **Advanced settings $\rightarrow$ Secrets** and paste your API keys in TOML format:
+   ```toml
+   OPENAI_API_KEY = "your_openai_api_key_here"
+   PINECONE_API_KEY = "your_pinecone_api_key_here"
+   PINECONE_INDEX_NAME = "agentic-ai-index"
+   ```
+5. Click **Deploy!** The application seamlessly executes the LangGraph RAG workflow in-process.
+
+### Key Features:
+- **Dual Pipeline Mode**: Supports both Direct In-Process LangGraph execution (recommended for Streamlit Cloud) and external FastAPI REST API client mode.
 - **Benchmark Selector**: Quick-load predefined benchmark questions.
 - **Response Cards**: Displays grounded answers, confidence score metrics, and expandable context chunks with page numbers.
 

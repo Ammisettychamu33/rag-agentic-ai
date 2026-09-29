@@ -1,6 +1,5 @@
 import os
 import sys
-import requests
 from pathlib import Path
 from dotenv import load_dotenv
 import streamlit as st
@@ -13,6 +12,18 @@ if str(PROJECT_ROOT) not in sys.path:
 # Load environment variables
 load_dotenv()
 
+# Synchronize Streamlit Cloud secrets into os.environ if running on Streamlit Cloud
+if hasattr(st, "secrets"):
+    for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME", "RAG_API_URL"]:
+        try:
+            if key in st.secrets and not os.getenv(key):
+                os.environ[key] = str(st.secrets[key])
+        except Exception:
+            pass
+
+# Import the pre-compiled LangGraph RAG workflow for direct in-process execution
+from src.graph import rag_app
+
 # Page Configuration
 st.set_page_config(
     page_title="Agentic AI RAG Assistant",
@@ -22,7 +33,7 @@ st.set_page_config(
 )
 
 # Constants
-API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
+DEFAULT_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 
 # ============================================================================
 # Helper Functions
@@ -30,9 +41,10 @@ API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 
 def check_backend_health(url: str) -> bool:
     """
-    Checks whether the FastAPI backend is running and healthy.
+    Checks whether an external FastAPI backend is running and healthy.
     """
     try:
+        import requests
         response = requests.get(f"{url}/health", timeout=2)
         return response.status_code == 200 and response.json().get("status") == "healthy"
     except Exception:
@@ -41,27 +53,71 @@ def check_backend_health(url: str) -> bool:
 
 def query_rag_api(question: str, url: str) -> dict:
     """
-    Sends a query to the FastAPI /chat endpoint.
+    Sends a query to the external FastAPI /chat endpoint.
     """
+    import requests
     endpoint = f"{url}/chat"
     payload = {"question": question}
     response = requests.post(endpoint, json=payload, timeout=60)
     return response.json()
 
 
+def query_rag_direct(question: str) -> dict:
+    """
+    Direct in-process execution using the LangGraph RAG workflow.
+    Used for standalone deployments on Streamlit Community Cloud.
+    """
+    initial_state = {
+        "question": question,
+        "context": [],
+        "answer": "",
+        "score": 0.0
+    }
+
+    result = rag_app.invoke(initial_state)
+
+    answer = result.get("answer", "")
+    score = float(result.get("score", 0.0))
+    raw_docs = result.get("context", [])
+
+    formatted_chunks = []
+    for doc in raw_docs:
+        formatted_chunks.append({
+            "content": doc.page_content,
+            "source": Path(doc.metadata.get("source", "Ebook-Agentic-AI.pdf")).name,
+            "page": doc.metadata.get("page", 1)
+        })
+
+    return {
+        "question": question,
+        "answer": answer,
+        "confidence_score": score,
+        "retrieved_chunks": formatted_chunks
+    }
+
+
 # ============================================================================
 # Sidebar Configuration
 # ============================================================================
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    api_endpoint = st.text_input("FastAPI Backend URL", value=API_URL)
+    st.header("⚙️ Execution Mode")
     
-    # Check backend health
-    is_healthy = check_backend_health(api_endpoint)
-    if is_healthy:
-        st.success("🟢 Backend API: Online")
+    execution_mode = st.radio(
+        "Select Pipeline Mode:",
+        ["Direct LangGraph Engine (Recommended for Streamlit Cloud)", "FastAPI REST API"],
+        index=0
+    )
+
+    api_endpoint = DEFAULT_API_URL
+    if execution_mode == "FastAPI REST API":
+        api_endpoint = st.text_input("FastAPI Backend URL", value=DEFAULT_API_URL)
+        is_healthy = check_backend_health(api_endpoint)
+        if is_healthy:
+            st.success("🟢 Backend API: Online")
+        else:
+            st.warning("🟡 Backend API: Offline")
     else:
-        st.warning("🟡 Backend API: Offline (Run `uvicorn app:app --reload`)")
+        st.success("🟢 In-Process LangGraph Engine Active")
 
     st.markdown("---")
     st.subheader("📚 Source Material")
@@ -94,7 +150,6 @@ st.markdown("---")
 # Pre-populate question input if sample was selected
 default_question = ""
 if selected_sample and selected_sample != "-- Select a benchmark query --":
-    # Strip the "(Refusal Test)" suffix if present
     default_question = selected_sample.replace(" (Refusal Test)", "")
 
 user_question = st.text_area(
@@ -119,12 +174,20 @@ if ask_button:
     else:
         with st.spinner("🔍 Retrieving context from Pinecone and generating grounded response..."):
             try:
-                # 1. Attempt call to FastAPI backend
-                if is_healthy:
-                    response_data = query_rag_api(trimmed_query, api_endpoint)
-                    
+                # Execute query based on selected mode
+                if execution_mode == "FastAPI REST API":
+                    if check_backend_health(api_endpoint):
+                        response_data = query_rag_api(trimmed_query, api_endpoint)
+                    else:
+                        st.error("❌ FastAPI backend is unreachable. Start `uvicorn app:app --reload` or switch to Direct LangGraph Engine mode.")
+                        response_data = None
+                else:
+                    # Direct in-process LangGraph execution
+                    response_data = query_rag_direct(trimmed_query)
+
+                if response_data:
                     if "detail" in response_data:
-                        st.error(f"❌ Backend Error: {response_data['detail']}")
+                        st.error(f"❌ Processing Error: {response_data['detail']}")
                     else:
                         answer = response_data.get("answer", "")
                         score = response_data.get("confidence_score", 0.0)
@@ -151,18 +214,14 @@ if ask_button:
                         else:
                             st.info("No context chunks were retrieved for this query.")
 
-                else:
-                    # Backend offline message
-                    st.warning(
-                        "⚠️ **FastAPI Backend is currently offline.**\n\n"
-                        "To use the full interactive chatbot, start the backend in a separate terminal:\n"
-                        "```bash\n"
-                        "uvicorn app:app --reload --port 8000\n"
-                        "```\n"
-                        "*Note: Live OpenAI and Pinecone API calls require active API credits in your `.env` configuration.*"
-                    )
-
-            except requests.exceptions.ConnectionError:
-                st.error("❌ Could not connect to the FastAPI backend. Please make sure `uvicorn app:app --reload` is running.")
             except Exception as e:
-                st.error(f"❌ An error occurred: {type(e).__name__}")
+                error_str = str(e)
+                if "429" in error_str or "credit_balance_exhausted" in error_str:
+                    st.error(
+                        "⚠️ **OpenAI API Quota Limit (429)**: The OpenAI account has no available credits. "
+                        "Please add credits at [OpenAI Billing](https://platform.openai.com/settings/organization/billing) or update your key in Streamlit Secrets."
+                    )
+                elif "PINECONE" in error_str.upper():
+                    st.error("⚠️ **Pinecone Connection Error**: Please verify your Pinecone API key and index name in Streamlit Secrets.")
+                else:
+                    st.error(f"❌ An error occurred during query execution: {type(e).__name__}")

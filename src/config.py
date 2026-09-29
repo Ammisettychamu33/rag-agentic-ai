@@ -2,10 +2,20 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env if present
 load_dotenv()
 
-# Project Paths
+# Synchronize Streamlit Cloud secrets into os.environ if running in Streamlit Cloud
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME", "RAG_API_URL"]:
+            if key in st.secrets and not os.getenv(key):
+                os.environ[key] = str(st.secrets[key])
+except Exception:
+    pass
+
+# Project Paths (Cross-platform compatible)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_PDF_PATH = DATA_DIR / "Ebook-Agentic-AI.pdf"
