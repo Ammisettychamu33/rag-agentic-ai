@@ -9,19 +9,32 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load environment variables
+# Load environment variables from .env if present (local development)
 load_dotenv()
 
 # Synchronize Streamlit Cloud secrets into os.environ if running on Streamlit Cloud
-if hasattr(st, "secrets"):
-    for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME", "RAG_API_URL"]:
-        try:
-            if key in st.secrets and not os.getenv(key):
-                os.environ[key] = str(st.secrets[key])
-        except Exception:
-            pass
+def sync_streamlit_secrets():
+    """
+    Safely synchronizes Streamlit Secrets into os.environ without raising exceptions
+    if secrets are not yet configured in Streamlit Community Cloud.
+    """
+    try:
+        if hasattr(st, "secrets"):
+            for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME", "RAG_API_URL"]:
+                try:
+                    if key in st.secrets and not os.getenv(key):
+                        val = str(st.secrets[key]).strip()
+                        if val and not val.startswith("your_"):
+                            os.environ[key] = val
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-# Import the pre-compiled LangGraph RAG workflow for direct in-process execution
+sync_streamlit_secrets()
+
+# Import vector store validation helper and pre-compiled LangGraph workflow
+from src.vector_store import validate_api_keys
 from src.graph import rag_app
 
 # Page Configuration
@@ -120,6 +133,16 @@ with st.sidebar:
         st.success("🟢 In-Process LangGraph Engine Active")
 
     st.markdown("---")
+    st.subheader("🔑 Credentials Status")
+    sync_streamlit_secrets()
+    has_credentials = validate_api_keys()
+    if has_credentials:
+        st.success("🟢 Live API Keys: Configured")
+    else:
+        st.warning("🟡 Live API Keys: Not Configured")
+        st.caption("Live RAG retrieval requires `OPENAI_API_KEY` and `PINECONE_API_KEY` in Streamlit Secrets.")
+
+    st.markdown("---")
     st.subheader("📚 Source Material")
     st.info("**Document**: Agentic AI eBook (`Ebook-Agentic-AI.pdf`)\n\n**Pages**: 60 Pages (119 Chunks)")
 
@@ -144,6 +167,24 @@ st.markdown(
     "Ask questions about **Agentic AI architecture, autonomous systems, and enterprise design patterns**. "
     "Answers are **strictly grounded** in the provided Agentic AI eBook."
 )
+
+# Streamlit Community Cloud configuration guide if credentials are not set
+if not has_credentials and execution_mode.startswith("Direct LangGraph"):
+    with st.expander("ℹ️ How to configure API keys for live RAG in Streamlit Community Cloud", expanded=False):
+        st.markdown(
+            """
+            To enable live Pinecone vector search and OpenAI answer generation:
+            1. Open your app on **[Streamlit Community Cloud](https://share.streamlit.io/)**.
+            2. Click **App Settings** (or the **⋮** menu at top right) ➔ **Secrets**.
+            3. Enter your API credentials in TOML format:
+            ```toml
+            OPENAI_API_KEY = "your-actual-openai-api-key"
+            PINECONE_API_KEY = "your-actual-pinecone-api-key"
+            PINECONE_INDEX_NAME = "agentic-ai-index"
+            ```
+            4. Click **Save**. Streamlit Cloud will immediately make them available to the RAG pipeline.
+            """
+        )
 
 st.markdown("---")
 
@@ -172,56 +213,85 @@ if ask_button:
     if not trimmed_query:
         st.error("⚠️ Please enter a valid question before asking.")
     else:
-        with st.spinner("🔍 Retrieving context from Pinecone and generating grounded response..."):
-            try:
-                # Execute query based on selected mode
-                if execution_mode == "FastAPI REST API":
-                    if check_backend_health(api_endpoint):
-                        response_data = query_rag_api(trimmed_query, api_endpoint)
-                    else:
-                        st.error("❌ FastAPI backend is unreachable. Start `uvicorn app:app --reload` or switch to Direct LangGraph Engine mode.")
-                        response_data = None
-                else:
-                    # Direct in-process LangGraph execution
-                    response_data = query_rag_direct(trimmed_query)
-
-                if response_data:
-                    if "detail" in response_data:
-                        st.error(f"❌ Processing Error: {response_data['detail']}")
-                    else:
-                        answer = response_data.get("answer", "")
-                        score = response_data.get("confidence_score", 0.0)
-                        chunks = response_data.get("retrieved_chunks", [])
-
-                        # Display Answer
-                        st.markdown("### 📝 Answer")
-                        st.write(answer)
-
-                        # Display Confidence Score
-                        st.markdown("---")
-                        st.metric(label="Relevance / Confidence Score", value=f"{score:.4f}")
-
-                        # Display Retrieved Chunks
-                        if chunks:
-                            st.markdown("### 📑 Retrieved Context Chunks")
-                            for idx, chunk in enumerate(chunks, 1):
-                                source = chunk.get("source", "Unknown")
-                                page = chunk.get("page", "N/A")
-                                content = chunk.get("content", "")
-
-                                with st.expander(f"Chunk #{idx} — Source: `{source}` | Page: `{page}`"):
-                                    st.write(content)
+        # Check credentials before starting execution in Direct LangGraph mode
+        sync_streamlit_secrets()
+        if execution_mode.startswith("Direct LangGraph") and not validate_api_keys():
+            st.warning(
+                "⚠️ **Live RAG requires API credentials**\n\n"
+                "Live query execution requires `OPENAI_API_KEY` and `PINECONE_API_KEY` to be configured.\n\n"
+                "**For Streamlit Community Cloud:**\n"
+                "Go to **App Settings ➔ Secrets** and configure:\n"
+                "```toml\n"
+                "OPENAI_API_KEY = \"your-actual-openai-api-key\"\n"
+                "PINECONE_API_KEY = \"your-actual-pinecone-api-key\"\n"
+                "PINECONE_INDEX_NAME = \"agentic-ai-index\"\n"
+                "```\n"
+                "**For Local Development:**\n"
+                "Ensure your `.env` file contains valid `OPENAI_API_KEY` and `PINECONE_API_KEY`."
+            )
+        else:
+            with st.spinner("🔍 Retrieving context from Pinecone and generating grounded response..."):
+                try:
+                    # Execute query based on selected mode
+                    if execution_mode == "FastAPI REST API":
+                        if check_backend_health(api_endpoint):
+                            response_data = query_rag_api(trimmed_query, api_endpoint)
                         else:
-                            st.info("No context chunks were retrieved for this query.")
+                            st.error("❌ FastAPI backend is unreachable. Start `uvicorn app:app --reload` or switch to Direct LangGraph Engine mode.")
+                            response_data = None
+                    else:
+                        # Direct in-process LangGraph execution
+                        response_data = query_rag_direct(trimmed_query)
 
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "credit_balance_exhausted" in error_str:
-                    st.error(
-                        "⚠️ **OpenAI API Quota Limit (429)**: The OpenAI account has no available credits. "
-                        "Please add credits at [OpenAI Billing](https://platform.openai.com/settings/organization/billing) or update your key in Streamlit Secrets."
-                    )
-                elif "PINECONE" in error_str.upper():
-                    st.error("⚠️ **Pinecone Connection Error**: Please verify your Pinecone API key and index name in Streamlit Secrets.")
-                else:
-                    st.error(f"❌ An error occurred during query execution: {type(e).__name__}")
+                    if response_data:
+                        if "detail" in response_data:
+                            st.error(f"❌ Processing Error: {response_data['detail']}")
+                        else:
+                            answer = response_data.get("answer", "")
+                            score = response_data.get("confidence_score", 0.0)
+                            chunks = response_data.get("retrieved_chunks", [])
+
+                            # Display Answer
+                            st.markdown("### 📝 Answer")
+                            st.write(answer)
+
+                            # Display Confidence Score
+                            st.markdown("---")
+                            st.metric(label="Relevance / Confidence Score", value=f"{score:.4f}")
+
+                            # Display Retrieved Chunks
+                            if chunks:
+                                st.markdown("### 📑 Retrieved Context Chunks")
+                                for idx, chunk in enumerate(chunks, 1):
+                                    source = chunk.get("source", "Unknown")
+                                    page = chunk.get("page", "N/A")
+                                    content = chunk.get("content", "")
+
+                                    with st.expander(f"Chunk #{idx} — Source: `{source}` | Page: `{page}`"):
+                                        st.write(content)
+                            else:
+                                st.info("No context chunks were retrieved for this query.")
+
+                except ValueError as ve:
+                    error_msg = str(ve)
+                    if "OPENAI_API_KEY" in error_msg or "PINECONE_API_KEY" in error_msg:
+                        st.warning(
+                            f"⚠️ **Credentials Required**: {error_msg}\n\n"
+                            "Please configure `OPENAI_API_KEY` and `PINECONE_API_KEY` in Streamlit Community Cloud Secrets (App Settings ➔ Secrets)."
+                        )
+                    else:
+                        st.error(f"⚠️ **Validation Error**: {error_msg}")
+                except Exception as e:
+                    error_str = str(e)
+                    if "429" in error_str or "credit_balance_exhausted" in error_str or "insufficient_quota" in error_str:
+                        st.error(
+                            "⚠️ **OpenAI API Quota Limit (429)**: The configured OpenAI account has no available credits. "
+                            "Please check your billing at [OpenAI Billing](https://platform.openai.com/settings/organization/billing) or update your key in Streamlit Secrets."
+                        )
+                    elif "PINECONE" in error_str.upper():
+                        st.error(
+                            f"⚠️ **Pinecone Connection Error**: {error_str}\n\n"
+                            "Please verify your Pinecone API key and index name in Streamlit Secrets."
+                        )
+                    else:
+                        st.error(f"❌ An error occurred during query execution: {error_str}")

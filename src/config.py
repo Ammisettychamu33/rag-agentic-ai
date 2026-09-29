@@ -10,8 +10,13 @@ try:
     import streamlit as st
     if hasattr(st, "secrets"):
         for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME", "RAG_API_URL"]:
-            if key in st.secrets and not os.getenv(key):
-                os.environ[key] = str(st.secrets[key])
+            try:
+                if key in st.secrets and not os.getenv(key):
+                    val = str(st.secrets[key]).strip()
+                    if val and not val.startswith("your_"):
+                        os.environ[key] = val
+            except Exception:
+                pass
 except Exception:
     pass
 

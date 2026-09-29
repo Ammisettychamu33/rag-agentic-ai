@@ -11,13 +11,25 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load environment variables from .env if present
+load_dotenv()
+
+# Synchronize Streamlit Cloud secrets into os.environ if available
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        for key in ["OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX_NAME"]:
+            if key in st.secrets and not os.getenv(key):
+                val = str(st.secrets[key]).strip()
+                if val and not val.startswith("your_"):
+                    os.environ[key] = val
+except Exception:
+    pass
+
 from pinecone import Pinecone, ServerlessSpec
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.documents import Document
-
-# Load environment variables from .env
-load_dotenv()
 
 # Constants based on assignment specifications
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -47,7 +59,9 @@ def get_embeddings() -> OpenAIEmbeddings:
     """
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not openai_key or openai_key.startswith("your_"):
-        raise ValueError("Missing or invalid OPENAI_API_KEY. Please set it in your .env file.")
+        raise ValueError(
+            "Missing or invalid OPENAI_API_KEY. Please configure OPENAI_API_KEY in your `.env` file (local) or Streamlit Secrets (Cloud)."
+        )
 
     return OpenAIEmbeddings(
         model=EMBEDDING_MODEL,
@@ -73,7 +87,9 @@ def init_pinecone_index(
     """
     pinecone_key = os.getenv("PINECONE_API_KEY", "").strip()
     if not pinecone_key or pinecone_key.startswith("your_"):
-        raise ValueError("Missing or invalid PINECONE_API_KEY. Please set it in your .env file.")
+        raise ValueError(
+            "Missing or invalid PINECONE_API_KEY. Please configure PINECONE_API_KEY in your `.env` file (local) or Streamlit Secrets (Cloud)."
+        )
 
     pc = Pinecone(api_key=pinecone_key)
 
